@@ -6,6 +6,7 @@ export DB_HOST=
 export DB_DB=
 export HOST=
 export PORT=
+export SESSION_KEY=
 
 export UPLOAD_DIR=./upload
 

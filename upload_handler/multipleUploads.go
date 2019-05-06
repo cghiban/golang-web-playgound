@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log"
 	"math/rand"
@@ -16,7 +17,10 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/gorilla/sessions"
 )
+
+var cStore *sessions.CookieStore
 
 const _10M = (1 << 20) * 10
 
@@ -147,6 +151,7 @@ func storeData(order orderInfo, processedFiles []string) bool {
 }
 
 func process(w http.ResponseWriter, r *http.Request) {
+	session, err := cStore.Get(r, "local-session")
 	w.Header().Set("Content-type", "text/html")
 	if err := r.ParseMultipartForm(_10M); nil != err {
 		//http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -160,16 +165,12 @@ func process(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//fmt.Fprintln(w, r.MultipartForm)
-	fmt.Fprintf(w, "<div>name: %s</div>", r.FormValue("name"))
-	fmt.Fprintf(w, "email: %s\n", r.FormValue("email"))
-	fmt.Fprintf(w, "<div>institution: %s</div>", r.FormValue("institution"))
-
 	orderNum, orderDir, err := createDestinationDir(uploadDir)
 	if err != nil {
-		fmt.Println("<div>Error: ", err, "</div>")
-		fmt.Println("<div>Go back and try again..</div>")
-		return
+		fmt.Println("Error creating destination dir: ", err)
+		session.AddFlash("Can't create destination dir ")
+		session.Save(r, w)
+		http.Redirect(w, r, "/gwup", 302)
 	}
 	destDir := uploadDir + string(os.PathSeparator) + orderDir
 	fmt.Printf("orderNum:%s\n", orderNum)
@@ -182,23 +183,21 @@ func process(w http.ResponseWriter, r *http.Request) {
 		email:       strings.TrimSpace(r.FormValue("email")),
 	}
 	if !order.isValid() {
-		fmt.Fprintln(w, "Missing info. <a href=\"javascript:history.go(-1)\">go back</a> and try again!")
-		return
+		session.AddFlash(fmt.Sprintf("Missing info"))
+		session.Save(r, w)
+		http.Redirect(w, r, "/gwup", 302)
 	}
-
-	fmt.Printf("%v\n", order)
-	fmt.Printf("%+v\n", order)
 
 	processedFiles := make([]string, 0, 50)
 
-	fmt.Fprintln(w, "---------------------\n")
+	//fmt.Fprintln(w, "---------------------\n")
 	files := r.MultipartForm.File["input"]
 	for i := range files { //Iterate over multiple uploaded files
 
 		ext := path.Ext(files[i].Filename)
-		fmt.Fprintf(w, "<div> + adding file: %s</div>", files[i].Filename)
+		//fmt.Fprintf(w, "<div> + adding file: %s</div>", files[i].Filename)
 		if ext != ".ab1" {
-			fmt.Fprintf(w, "<div>  - skipping file: %s. Invalid extension %s</div>\n", files[i].Filename, ext)
+			session.AddFlash(fmt.Sprintf("skipping file: %s. Invalid extension %s\n", files[i].Filename, ext))
 			continue
 		}
 
@@ -206,6 +205,7 @@ func process(w http.ResponseWriter, r *http.Request) {
 		defer file.Close()
 		if err != nil {
 			fmt.Println("error reading file ", err)
+			session.AddFlash(fmt.Sprintf("Error reading file %s", files[i].Filename))
 			continue
 		}
 
@@ -228,23 +228,48 @@ func process(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(processedFiles) > 0 {
+		fmt.Printf("about to add: %+v\n", order)
 		ok := storeData(order, processedFiles)
 		//fmt.Printf("ok := %v\n\n\n", ok)
 		if ok {
-			fmt.Fprintf(w, "<div><br><br>Added %d files to GW order <strong>%s</strong></div>", len(processedFiles), order.number)
+
+			msg := fmt.Sprintf("Added %d files to fake GW order %s", len(processedFiles), order.number)
+			session.AddFlash(msg)
 		}
 	} else {
+		session.AddFlash("No files were uploaded!")
 		// no need to keep an empty folder
 		dirToRemove := uploadDir + string(os.PathSeparator) + orderDir
-		fmt.Println("about to rm: ", dirToRemove)
 		if err := os.Remove(dirToRemove); err != nil {
-			//fmt.Println(err)
+			fmt.Println("removed empty dir: ", dirToRemove)
 		}
 	}
+	session.Save(r, w)
+	http.Redirect(w, r, "/gwup", 302)
 }
 
 func index(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "multipleUploads.html")
+	session, err := cStore.Get(r, "local-session")
+	session.Options = &sessions.Options{
+		Path:     "/",
+		MaxAge:   3600 * 1, // one hour
+		HttpOnly: true,
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	msg := ""
+	if flashes := session.Flashes(); len(flashes) > 0 {
+		for _, f := range flashes {
+			msg += fmt.Sprintf("» %s", f)
+		}
+	}
+	session.Save(r, w)
+	// Create a new template and parse the data into it.
+	t := template.Must(template.New("index").Parse(getTemplate()))
+	t.ExecuteTemplate(w, "index", msg)
 }
 
 func xlog(h http.HandlerFunc) http.HandlerFunc {
@@ -255,7 +280,36 @@ func xlog(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func getTemplate() string {
+	return string([]byte(`
+	<!DOCTYPE html>
+	<html>
+	<head>
+	<meta charset="UTF-8" />
+	</head>
+	<body>
+	{{ if . }}
+	<pre>{{ . }}</pre>
+	{{ end }}
+	<div>
+	<form method="post" action="/gwup/process" enctype="multipart/form-data">
+		<label>Name</label><input name="name" type="text" value="" />
+		<label>Institution</label><input name="institution" type="text" value="" />
+		<label>Email</label><input name="email" type="email" value="" />
+		<div>
+			<label>Upload</label><input name="input" type="file" multiple/>
+		</div>
+		<input type="submit" value="submit" />
+	</form>
+	</div>
+	</body>
+	</html>`))
+}
+
 func main() {
+
+	// init sesssion store
+	cStore = sessions.NewCookieStore([]byte(os.Getenv("SESSION_KEY")))
 
 	host := os.Getenv("HOST")
 	if host == "" {
@@ -271,5 +325,8 @@ func main() {
 	}
 	http.HandleFunc("/gwup/process", xlog(process))
 	http.HandleFunc("/gwup", xlog(index))
-	server.ListenAndServe()
+	if err := server.ListenAndServe(); err != nil {
+		fmt.Println("Error: ", err)
+		os.Exit(1)
+	}
 }

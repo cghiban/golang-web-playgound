@@ -171,6 +171,7 @@ func process(w http.ResponseWriter, r *http.Request) {
 		session.AddFlash("Can't create destination dir ")
 		session.Save(r, w)
 		http.Redirect(w, r, "/gwup", 302)
+		return
 	}
 	destDir := uploadDir + string(os.PathSeparator) + orderDir
 	fmt.Printf("orderNum:%s\n", orderNum)
@@ -186,6 +187,7 @@ func process(w http.ResponseWriter, r *http.Request) {
 		session.AddFlash(fmt.Sprintf("Missing info"))
 		session.Save(r, w)
 		http.Redirect(w, r, "/gwup", 302)
+		return
 	}
 
 	processedFiles := make([]string, 0, 50)

@@ -119,7 +119,7 @@ func storeData(order orderInfo, processedFiles []string) bool {
 	if err != nil {
 		log.Fatal(err)
 	}
-	res, err := stmt.Exec(order.number, order.name, order.institution, order.email)
+	res, err := stmt.Exec(order.number, order.name, order.email, order.institution)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -227,10 +227,19 @@ func process(w http.ResponseWriter, r *http.Request) {
 		processedFiles = append(processedFiles, filePath)
 	}
 
-	ok := storeData(order, processedFiles)
-	fmt.Printf("ok := %v\n\n\n", ok)
-	if ok {
-		fmt.Fprintf(w, "<div><br><br>Added %d files to GW order <strong>%s</strong></div>", len(processedFiles), order.number)
+	if len(processedFiles) > 0 {
+		ok := storeData(order, processedFiles)
+		//fmt.Printf("ok := %v\n\n\n", ok)
+		if ok {
+			fmt.Fprintf(w, "<div><br><br>Added %d files to GW order <strong>%s</strong></div>", len(processedFiles), order.number)
+		}
+	} else {
+		// no need to keep an empty folder
+		dirToRemove := uploadDir + string(os.PathSeparator) + orderDir
+		fmt.Println("about to rm: ", dirToRemove)
+		if err := os.Remove(dirToRemove); err != nil {
+			//fmt.Println(err)
+		}
 	}
 }
 
